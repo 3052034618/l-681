@@ -1,0 +1,106 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-bg text-gray-100 font-sans antialiased;
+    font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-bg-dark;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-border-light;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-bg-card rounded-xl border border-border p-5 backdrop-blur-sm;
+  }
+
+  .card-glow {
+    @apply card;
+    box-shadow: 0 0 30px -10px rgba(212, 168, 67, 0.15);
+  }
+
+  .btn {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200 inline-flex items-center justify-center gap-2;
+  }
+
+  .btn-primary {
+    @apply btn bg-primary-500 text-white hover:bg-primary-600 active:bg-primary-700;
+  }
+
+  .btn-wheat {
+    @apply btn bg-wheat text-bg-dark hover:bg-wheat-600;
+  }
+
+  .btn-outline {
+    @apply btn border border-border text-gray-200 hover:bg-bg-light;
+  }
+
+  .btn-danger {
+    @apply btn bg-red-600 text-white hover:bg-red-700;
+  }
+
+  .input {
+    @apply w-full px-4 py-2.5 bg-bg-dark border border-border rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:border-wheat transition-colors;
+  }
+
+  .label {
+    @apply block text-sm font-medium text-gray-300 mb-1.5;
+  }
+
+  .badge {
+    @apply px-2.5 py-0.5 rounded-full text-xs font-medium inline-flex items-center gap-1;
+  }
+
+  .table-th {
+    @apply px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-border;
+  }
+
+  .table-td {
+    @apply px-4 py-3 text-sm text-gray-200 border-b border-border/50;
+  }
+
+  .stat-value {
+    @apply font-mono text-2xl font-bold;
+  }
+}
+
+@layer utilities {
+  .text-gradient {
+    background: linear-gradient(135deg, #D4A843 0%, #F0D78C 50%, #D4A843 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .animate-number {
+    animation: numberRoll 0.5s ease-out;
+  }
+
+  @keyframes numberRoll {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+}
