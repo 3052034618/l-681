@@ -162,21 +162,51 @@ export interface MaintenanceOrder {
   escalated: boolean;
 }
 
+export interface OutboundTaskItem {
+  batchId: string;
+  quantity: number;
+  grade: GrainGrade;
+  variety: GrainVariety;
+  origin: string;
+  warehouseId: string;
+  position: string;
+  qualityStatus?: 'unchecked' | 'passed' | 'failed';
+  qualityResult?: QualityCheckResult;
+}
+
 export interface OutboundTask {
   id: string;
   code: string;
-  items: Array<{
-    batchId: string;
-    quantity: number;
-    grade: GrainGrade;
-    variety: GrainVariety;
-    origin: string;
-    warehouseId: string;
-    position: string;
-  }>;
+  items: OutboundTaskItem[];
   status: 'pending' | 'picking' | 'verifying' | 'completed' | 'exception';
   createdAt: string;
   exceptionReason?: string;
+}
+
+export interface QuarantineRecord {
+  id: string;
+  batchId: string;
+  origin: string;
+  variety: GrainVariety;
+  grade: GrainGrade;
+  warehouseId: string;
+  outboundTaskId?: string;
+  outboundTaskCode?: string;
+  failedItems: string[];
+  qualityDetail: QualityCheckResult;
+  quarantineTime: string;
+  processStatus: 'pending' | 'reinspect' | 'return' | 'disposed';
+  processNote?: string;
+  eTagId: string;
+}
+
+export interface StockCheckResult {
+  canFullfill: boolean;
+  requested: number;
+  available: number;
+  shortfall: number;
+  matchedBatches: Array<{ batchId: string; quantity: number; origin: string }>;
+  alternativeBatches: Array<{ batchId: string; variety: GrainVariety; quantity: number; origin: string; warehouseId: string }>;
 }
 
 export interface WarehouseRecommendation {

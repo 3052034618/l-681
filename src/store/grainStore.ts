@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import type { GrainBatch, Warehouse, Alert, Equipment, MaintenanceOrder, ProcurementSuggestion, OutboundTask, FumigationPlan, GrainVariety, WarehouseRecommendation, NewGrainBatch } from '@/types';
-import { mockGrainBatches, mockWarehouses, mockAlerts, mockEquipment, mockMaintenanceOrders, mockProcurementSuggestions, mockOutboundTasks, mockFumigationPlans } from '@/data/mockData';
+import type { GrainBatch, Warehouse, Alert, Equipment, MaintenanceOrder, ProcurementSuggestion, OutboundTask, FumigationPlan, GrainVariety, WarehouseRecommendation, NewGrainBatch, QuarantineRecord, StockCheckResult, QualityCheckResult, OutboundTaskItem } from '@/types';
+import { mockGrainBatches, mockWarehouses, mockAlerts, mockEquipment, mockMaintenanceOrders, mockProcurementSuggestions, mockOutboundTasks, mockFumigationPlans, mockQuarantineRecords } from '@/data/mockData';
 
 interface StoreState {
   grainBatches: GrainBatch[];
@@ -11,6 +11,7 @@ interface StoreState {
   procurementSuggestions: ProcurementSuggestion[];
   outboundTasks: OutboundTask[];
   fumigationPlans: FumigationPlan[];
+  quarantineRecords: QuarantineRecord[];
   currentTime: Date;
 
   addGrainBatch: (batch: NewGrainBatch) => string;
@@ -22,14 +23,17 @@ interface StoreState {
   startFumigationExecution: (planId: string) => void;
   completeFumigation: (planId: string) => void;
   recommendWarehouse: (variety: GrainVariety, weight: number) => WarehouseRecommendation[];
-  createOutboundTask: (variety: GrainVariety, quantity: number) => OutboundTask;
+  checkOutboundStock: (variety: GrainVariety, quantity: number) => StockCheckResult;
+  createOutboundTask: (variety: GrainVariety, quantity: number, forcePartial?: boolean) => OutboundTask | null;
   approveFumigation: (planId: string, role: 'warehouseMinister' | 'qualityInspector', comment: string, approved: boolean) => void;
   approveProcurement: (suggestionId: string, role: 'warehouse' | 'finance' | 'generalManager', comment: string, approved: boolean) => void;
   addMaintenanceOrder: (order: Omit<MaintenanceOrder, 'id' | 'createdAt' | 'escalated'>) => void;
   escalateOrder: (orderId: string) => void;
   completeOrder: (orderId: string) => void;
   quarantineBatch: (batchId: string, reason: string) => void;
+  checkSingleBatchQuality: (taskId: string, batchId: string, result: QualityCheckResult) => { allPassed: boolean; batchFailed: boolean };
   advanceOutboundTask: (taskId: string, newStatus: OutboundTask['status']) => void;
+  updateQuarantineRecord: (recordId: string, status: QuarantineRecord['processStatus'], note?: string) => void;
 }
 
 export const useGrainStore = create<StoreState>((set, get) => ({
@@ -41,6 +45,7 @@ export const useGrainStore = create<StoreState>((set, get) => ({
   procurementSuggestions: mockProcurementSuggestions,
   outboundTasks: mockOutboundTasks,
   fumigationPlans: mockFumigationPlans,
+  quarantineRecords: mockQuarantineRecords,
   currentTime: new Date(),
 
   addGrainBatch: (batchData) => {
@@ -263,34 +268,74 @@ export const useGrainStore = create<StoreState>((set, get) => ({
     return recommendations;
   },
 
-  createOutboundTask: (variety, quantity) => {
+  checkOutboundStock: (variety, quantity) => {
     const state = get();
     const suitableBatches = state.grainBatches
       .filter((b) => b.variety === variety && b.status !== 'quarantined' && b.status !== 'outbound' && b.status !== 'warning')
       .sort((a, b) => new Date(a.inboundDate).getTime() - new Date(b.inboundDate).getTime());
 
+    let available = 0;
+    suitableBatches.forEach((b) => { available += b.weight; });
+
     let remaining = quantity;
-    const items: OutboundTask['items'] = [];
+    const matchedBatches: StockCheckResult['matchedBatches'] = [];
     for (const batch of suitableBatches) {
       if (remaining <= 0) break;
       const takeQty = Math.min(batch.weight, remaining);
-      items.push({
+      matchedBatches.push({ batchId: batch.id, quantity: takeQty, origin: batch.origin });
+      remaining -= takeQty;
+    }
+    const shortfall = Math.max(0, remaining);
+
+    const alternativeBatches: StockCheckResult['alternativeBatches'] = state.grainBatches
+      .filter((b) => b.variety !== variety && b.status !== 'quarantined' && b.status !== 'outbound' && b.status !== 'warning')
+      .sort((a, b) => new Date(a.inboundDate).getTime() - new Date(b.inboundDate).getTime())
+      .slice(0, 5)
+      .map((b) => ({
+        batchId: b.id,
+        variety: b.variety,
+        quantity: b.weight,
+        origin: b.origin,
+        warehouseId: b.warehouseId,
+      }));
+
+    return {
+      canFullfill: shortfall === 0,
+      requested: quantity,
+      available: Math.round(available),
+      shortfall: Math.round(shortfall),
+      matchedBatches,
+      alternativeBatches,
+    };
+  },
+
+  createOutboundTask: (variety, quantity, forcePartial = false) => {
+    const state = get();
+    const check = state.checkOutboundStock(variety, quantity);
+
+    if (!forcePartial && !check.canFullfill) {
+      return null;
+    }
+
+    const items: OutboundTaskItem[] = check.matchedBatches.map((m) => {
+      const batch = state.grainBatches.find((b) => b.id === m.batchId)!;
+      return {
         batchId: batch.id,
-        quantity: takeQty,
+        quantity: m.quantity,
         grade: batch.grade,
         variety: batch.variety,
         origin: batch.origin,
         warehouseId: batch.warehouseId,
         position: batch.position || '未指定',
-      });
-      remaining -= takeQty;
-    }
+        qualityStatus: 'unchecked',
+      };
+    });
 
     const task: OutboundTask = {
       id: `OT${Date.now()}`,
       code: `CK-${new Date().getFullYear()}-${String(state.outboundTasks.length + 1).padStart(3, '0')}`,
       items,
-      status: 'pending',
+      status: 'verifying',
       createdAt: new Date().toISOString(),
     };
 
@@ -365,6 +410,36 @@ export const useGrainStore = create<StoreState>((set, get) => ({
   },
 
   quarantineBatch: (batchId, reason) => {
+    const state = get();
+    const batch = state.grainBatches.find((b) => b.id === batchId);
+    const failedTask = state.outboundTasks.find((t) => t.items.some((i) => i.batchId === batchId));
+
+    const failedItem = failedTask?.items.find((i) => i.batchId === batchId);
+    const failedItems = failedItem?.qualityResult?.failedItem ? [failedItem.qualityResult.failedItem] : ['质检不合格'];
+
+    const record: QuarantineRecord | undefined = batch ? {
+      id: `QR${Date.now()}`,
+      batchId,
+      origin: batch.origin,
+      variety: batch.variety,
+      grade: batch.grade,
+      warehouseId: batch.warehouseId,
+      outboundTaskId: failedTask?.id,
+      outboundTaskCode: failedTask?.code,
+      failedItems,
+      qualityDetail: failedItem?.qualityResult || {
+        grade: { passed: true, expected: 'Grade 1', detected: 'Grade 1' },
+        moisture: { passed: true, expected: 14.5, detected: 12.8, threshold: 14.5 },
+        pest: { passed: true, detected: 1, threshold: 5 },
+        impurity: { passed: true, detected: 0.4, threshold: 1.0 },
+        overallPassed: false,
+      },
+      quarantineTime: new Date().toISOString(),
+      processStatus: 'pending',
+      processNote: reason,
+      eTagId: batch.eTagId,
+    } : undefined;
+
     set((state) => ({
       grainBatches: state.grainBatches.map((b) =>
         b.id === batchId ? { ...b, status: 'quarantined' } : b
@@ -374,7 +449,74 @@ export const useGrainStore = create<StoreState>((set, get) => ({
           ? { ...t, status: 'exception', exceptionReason: reason }
           : t
       ),
+      quarantineRecords: record ? [record, ...state.quarantineRecords] : state.quarantineRecords,
     }));
+  },
+
+  checkSingleBatchQuality: (taskId, batchId, result) => {
+    const state = get();
+    const task = state.outboundTasks.find((t) => t.id === taskId);
+    if (!task) return { allPassed: false, batchFailed: false };
+
+    const batchFailed = !result.overallPassed;
+
+    let failedItems: string[] = [];
+    if (!result.grade.passed) failedItems.push('等级');
+    if (!result.moisture.passed) failedItems.push('水分');
+    if (!result.pest.passed) failedItems.push('虫害');
+    if (!result.impurity.passed) failedItems.push('杂质');
+
+    const batch = state.grainBatches.find((b) => b.id === batchId);
+
+    const quarantineRecord: QuarantineRecord | undefined = (batchFailed && batch) ? {
+      id: `QR${Date.now()}`,
+      batchId,
+      origin: batch.origin,
+      variety: batch.variety,
+      grade: batch.grade,
+      warehouseId: batch.warehouseId,
+      outboundTaskId: task.id,
+      outboundTaskCode: task.code,
+      failedItems,
+      qualityDetail: result,
+      quarantineTime: new Date().toISOString(),
+      processStatus: 'pending',
+      processNote: `出库${task.code}质检${failedItems.join('、')}不合格，自动隔离`,
+      eTagId: batch.eTagId,
+    } : undefined;
+
+    set((state) => ({
+      outboundTasks: state.outboundTasks.map((t) => {
+        if (t.id !== taskId) return t;
+        const newItems = t.items.map((i) =>
+          i.batchId === batchId
+            ? { ...i, qualityStatus: batchFailed ? 'failed' as const : 'passed' as const, qualityResult: result }
+            : i
+        );
+        const anyFailed = newItems.some((i) => i.qualityStatus === 'failed');
+        return {
+          ...t,
+          items: newItems,
+          status: anyFailed ? 'exception' as const : t.status,
+          exceptionReason: anyFailed
+            ? newItems.filter((i) => i.qualityStatus === 'failed').map((i) => `${i.batchId}: ${i.qualityResult?.failedItem || '质检不合格'}`).join('; ')
+            : t.exceptionReason,
+        };
+      }),
+      grainBatches: state.grainBatches.map((b) =>
+        b.id === batchId && batchFailed ? { ...b, status: 'quarantined' as const } : b
+      ),
+      quarantineRecords: quarantineRecord ? [quarantineRecord, ...state.quarantineRecords] : state.quarantineRecords,
+    }));
+
+    const updatedTask = get().outboundTasks.find((t) => t.id === taskId)!;
+    const allChecked = updatedTask.items.every((i) => i.qualityStatus && i.qualityStatus !== 'unchecked');
+    const allPassed = allChecked && updatedTask.items.every((i) => i.qualityStatus === 'passed');
+
+    if (allPassed) {
+      get().advanceOutboundTask(taskId, 'completed');
+    }
+    return { allPassed, batchFailed };
   },
 
   advanceOutboundTask: (taskId, newStatus) => {
@@ -385,14 +527,18 @@ export const useGrainStore = create<StoreState>((set, get) => ({
     if (newStatus === 'completed' && task.status !== 'completed') {
       const batchUpdates = new Map<string, number>();
       task.items.forEach((item) => {
-        const current = batchUpdates.get(item.batchId) || 0;
-        batchUpdates.set(item.batchId, current + item.quantity);
+        if (item.qualityStatus === 'passed' || !item.qualityStatus || item.qualityStatus === 'unchecked') {
+          const current = batchUpdates.get(item.batchId) || 0;
+          batchUpdates.set(item.batchId, current + item.quantity);
+        }
       });
 
       const warehouseUpdates = new Map<string, number>();
       task.items.forEach((item) => {
-        const current = warehouseUpdates.get(item.warehouseId) || 0;
-        warehouseUpdates.set(item.warehouseId, current + item.quantity);
+        if (item.qualityStatus === 'passed' || !item.qualityStatus || item.qualityStatus === 'unchecked') {
+          const current = warehouseUpdates.get(item.warehouseId) || 0;
+          warehouseUpdates.set(item.warehouseId, current + item.quantity);
+        }
       });
 
       set((state) => ({
@@ -426,5 +572,13 @@ export const useGrainStore = create<StoreState>((set, get) => ({
         ),
       }));
     }
+  },
+
+  updateQuarantineRecord: (recordId, status, note) => {
+    set((state) => ({
+      quarantineRecords: state.quarantineRecords.map((r) =>
+        r.id === recordId ? { ...r, processStatus: status, processNote: note || r.processNote } : r
+      ),
+    }));
   },
 }));

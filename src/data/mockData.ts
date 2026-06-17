@@ -1,4 +1,4 @@
-import type { Warehouse, GrainBatch, Alert, Equipment, MaintenanceOrder, ProcurementSuggestion, OutboundTask, FumigationPlan, Sensor } from '@/types';
+import type { Warehouse, GrainBatch, Alert, Equipment, MaintenanceOrder, ProcurementSuggestion, OutboundTask, FumigationPlan, Sensor, QuarantineRecord } from '@/types';
 
 const now = Date.now();
 const hours = (h: number) => new Date(now - h * 3600000).toISOString();
@@ -79,28 +79,71 @@ export const mockOutboundTasks: OutboundTask[] = [
   {
     id: 'OT001', code: 'CK-2025-001', status: 'picking', createdAt: hours(5),
     items: [
-      { batchId: 'B2025005', quantity: 500, grade: 'grade2', variety: 'wheat', origin: '江苏徐州', warehouseId: 'W04', position: 'D区-01' },
-      { batchId: 'B2025001', quantity: 300, grade: 'grade1', variety: 'wheat', origin: '河南周口', warehouseId: 'W01', position: 'A区-01' },
+      { batchId: 'B2025005', quantity: 500, grade: 'grade2', variety: 'wheat', origin: '江苏徐州', warehouseId: 'W04', position: 'D区-01', qualityStatus: 'unchecked' },
+      { batchId: 'B2025001', quantity: 300, grade: 'grade1', variety: 'wheat', origin: '河南周口', warehouseId: 'W01', position: 'A区-01', qualityStatus: 'unchecked' },
     ],
   },
   {
     id: 'OT002', code: 'CK-2025-002', status: 'verifying', createdAt: hours(10),
     items: [
-      { batchId: 'B2025003', quantity: 800, grade: 'grade1', variety: 'corn', origin: '吉林长春', warehouseId: 'W02', position: 'B区-01' },
+      { batchId: 'B2025003', quantity: 800, grade: 'grade1', variety: 'corn', origin: '吉林长春', warehouseId: 'W02', position: 'B区-01', qualityStatus: 'unchecked' },
     ],
   },
   {
     id: 'OT003', code: 'CK-2025-003', status: 'exception', createdAt: days(1),
     items: [
-      { batchId: 'B2025011', quantity: 200, grade: 'grade2', variety: 'barley', origin: '内蒙古呼和浩特', warehouseId: 'W11', position: 'K区-01' },
+      { batchId: 'B2025011', quantity: 200, grade: 'grade2', variety: 'barley', origin: '内蒙古呼和浩特', warehouseId: 'W11', position: 'K区-01', qualityStatus: 'failed',
+        qualityResult: {
+          grade: { passed: false, expected: 'Grade 2', detected: 'Grade 3' },
+          moisture: { passed: true, expected: 14.5, detected: 13.1, threshold: 14.5 },
+          pest: { passed: true, detected: 2, threshold: 5 },
+          impurity: { passed: true, detected: 0.6, threshold: 1.0 },
+          overallPassed: false,
+          failedItem: '等级',
+        }
+      },
     ],
     exceptionReason: '扫码核验发现等级不符，入库登记为二等，实际检测为三等',
   },
   {
     id: 'OT004', code: 'CK-2025-004', status: 'completed', createdAt: days(2),
     items: [
-      { batchId: 'B2025006', quantity: 1000, grade: 'grade1', variety: 'soybean', origin: '黑龙江齐齐哈尔', warehouseId: 'W05', position: 'E区-01' },
+      { batchId: 'B2025006', quantity: 1000, grade: 'grade1', variety: 'soybean', origin: '黑龙江齐齐哈尔', warehouseId: 'W05', position: 'E区-01', qualityStatus: 'passed',
+        qualityResult: {
+          grade: { passed: true, expected: 'Grade 1', detected: 'Grade 1' },
+          moisture: { passed: true, expected: 14.5, detected: 12.5, threshold: 14.5 },
+          pest: { passed: true, detected: 0, threshold: 5 },
+          impurity: { passed: true, detected: 0.3, threshold: 1.0 },
+          overallPassed: true,
+        }
+      },
     ],
+  },
+];
+
+export const mockQuarantineRecords: QuarantineRecord[] = [
+  {
+    id: 'QR001',
+    batchId: 'B2025011',
+    origin: '内蒙古呼和浩特',
+    variety: 'barley',
+    grade: 'grade2',
+    warehouseId: 'W11',
+    outboundTaskId: 'OT003',
+    outboundTaskCode: 'CK-2025-003',
+    failedItems: ['等级'],
+    qualityDetail: {
+      grade: { passed: false, expected: 'Grade 2', detected: 'Grade 3' },
+      moisture: { passed: true, expected: 14.5, detected: 13.1, threshold: 14.5 },
+      pest: { passed: true, detected: 2, threshold: 5 },
+      impurity: { passed: true, detected: 0.6, threshold: 1.0 },
+      overallPassed: false,
+      failedItem: '等级',
+    },
+    quarantineTime: days(1),
+    processStatus: 'reinspect',
+    processNote: '复检中，拟重新定级后降价出库',
+    eTagId: 'ET-011',
   },
 ];
 

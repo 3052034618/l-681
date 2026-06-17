@@ -79,3 +79,38 @@ export const formatCurrency = (n: number): string => {
 export const formatNumber = (n: number): string => {
   return new Intl.NumberFormat('zh-CN').format(n);
 };
+
+export interface TrendPoint { label: string; value: number; date: string; }
+
+export function generatePestTrend(days: number, seedPestValues: number[] = [2, 3, 1, 4, 2, 6, 3]): TrendPoint[] {
+  const points: TrendPoint[] = [];
+  const now = new Date();
+  const baseline = seedPestValues.reduce((a, b) => a + b, 0) / seedPestValues.length || 2;
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now.getTime() - i * 86400000);
+    const label = `${d.getMonth() + 1}/${d.getDate()}`;
+    const seedIdx = (days - 1 - i) % seedPestValues.length;
+    const seasonal = Math.sin((days - 1 - i) / 7 * Math.PI) * 2;
+    const wave = days > 30 ? Math.sin((days - 1 - i) / 30 * Math.PI) * 3 : 0;
+    const noise = (seedPestValues[seedIdx] - baseline) * 1.2;
+    const value = Math.max(0, Number((baseline + seasonal + wave + noise + ((days - 1 - i) * 0.015)).toFixed(1)));
+    points.push({ label, value, date: d.toISOString().slice(0, 10) });
+  }
+  return points;
+}
+
+export function generateTempTrend(days: number, baseTemp: number, seedName: string = ''): TrendPoint[] {
+  const points: TrendPoint[] = [];
+  const now = new Date();
+  const hash = seedName.split('').reduce((a, c) => a + c.charCodeAt(0), 0) || 0;
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now.getTime() - i * 86400000);
+    const label = `${d.getMonth() + 1}/${d.getDate()}`;
+    const diurnal = Math.sin((days - 1 - i + hash % 5) / 3 * Math.PI) * 1.5;
+    const weekly = days > 14 ? Math.sin((days - 1 - i) / 7 * Math.PI) * 2 : 0;
+    const monthly = days > 60 ? Math.sin((days - 1 - i) / 30 * Math.PI) * 3 : 0;
+    const value = Number((baseTemp + diurnal + weekly + monthly + ((hash % 7) - 3) * 0.1).toFixed(1));
+    points.push({ label, value, date: d.toISOString().slice(0, 10) });
+  }
+  return points;
+}
