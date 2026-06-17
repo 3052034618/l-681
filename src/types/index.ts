@@ -105,6 +105,18 @@ export interface FumigationPlan {
   };
   createdAt: string;
   createdBy: string;
+  startTime?: string;
+  estimatedEndTime?: string;
+  endTime?: string;
+}
+
+export interface QualityCheckResult {
+  grade: { passed: boolean; expected: string; detected: string };
+  moisture: { passed: boolean; expected: number; detected: number; threshold: number };
+  pest: { passed: boolean; detected: number; threshold: number };
+  impurity: { passed: boolean; detected: number; threshold: number };
+  overallPassed: boolean;
+  failedItem?: string;
 }
 
 export interface ProcurementSuggestion {

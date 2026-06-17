@@ -57,6 +57,17 @@ export const getTimeRemaining = (deadline: string): { text: string; urgent: bool
   return { text: `${hours}小时${mins}分`, urgent: false };
 };
 
+export const formatRelativeFuture = (iso: string): string => {
+  const diff = new Date(iso).getTime() - Date.now();
+  if (diff <= 0) return '已到期';
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}分钟后`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}小时后`;
+  const days = Math.floor(hours / 24);
+  return `${days}天后`;
+};
+
 export const generateId = (prefix: string): string => {
   return `${prefix}${Date.now()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 };

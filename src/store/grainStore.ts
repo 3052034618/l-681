@@ -19,6 +19,8 @@ interface StoreState {
   resolveAlert: (alertId: string, handler: string) => void;
   startVentilation: (alertId: string) => void;
   createFumigationFromAlert: (alertId: string) => void;
+  startFumigationExecution: (planId: string) => void;
+  completeFumigation: (planId: string) => void;
   recommendWarehouse: (variety: GrainVariety, weight: number) => WarehouseRecommendation[];
   createOutboundTask: (variety: GrainVariety, quantity: number) => OutboundTask;
   approveFumigation: (planId: string, role: 'warehouseMinister' | 'qualityInspector', comment: string, approved: boolean) => void;
@@ -193,6 +195,51 @@ export const useGrainStore = create<StoreState>((set, get) => ({
     }));
   },
 
+  startFumigationExecution: (planId) => {
+    const state = get();
+    const plan = state.fumigationPlans.find((p) => p.id === planId);
+    if (!plan || plan.status !== 'approved') return;
+    const now = new Date();
+    const estimatedEnd = new Date(now.getTime() + plan.duration * 3600000);
+    set((state) => ({
+      fumigationPlans: state.fumigationPlans.map((p) =>
+        p.id === planId
+          ? { ...p, status: 'executing', startTime: now.toISOString(), estimatedEndTime: estimatedEnd.toISOString() }
+          : p
+      ),
+    }));
+  },
+
+  completeFumigation: (planId) => {
+    const state = get();
+    const plan = state.fumigationPlans.find((p) => p.id === planId);
+    if (!plan || plan.status !== 'executing') return;
+    const now = new Date();
+    set((state) => ({
+      fumigationPlans: state.fumigationPlans.map((p) =>
+        p.id === planId ? { ...p, status: 'completed', endTime: now.toISOString() } : p
+      ),
+      grainBatches: state.grainBatches.map((b) =>
+        b.warehouseId === plan.warehouseId ? { ...b, pestLevel: 0, status: 'normal' as const } : b
+      ),
+      warehouses: state.warehouses.map((w) =>
+        w.id === plan.warehouseId
+          ? {
+              ...w,
+              sensors: w.sensors.map((s) =>
+                s.type === 'pest' ? { ...s, value: 0, status: 'normal' as const } : s
+              ),
+            }
+          : w
+      ),
+      alerts: state.alerts.map((a) =>
+        a.warehouseId === plan.warehouseId && a.type === 'pest' && a.status !== 'resolved'
+          ? { ...a, status: 'resolved', handler: '熏蒸处置完成 · 王保管员' }
+          : a
+      ),
+    }));
+  },
+
   recommendWarehouse: (variety, weight) => {
     const state = get();
     const recommendations: WarehouseRecommendation[] = state.warehouses
@@ -219,7 +266,7 @@ export const useGrainStore = create<StoreState>((set, get) => ({
   createOutboundTask: (variety, quantity) => {
     const state = get();
     const suitableBatches = state.grainBatches
-      .filter((b) => b.variety === variety && b.status !== 'quarantined' && b.status !== 'outbound')
+      .filter((b) => b.variety === variety && b.status !== 'quarantined' && b.status !== 'outbound' && b.status !== 'warning')
       .sort((a, b) => new Date(a.inboundDate).getTime() - new Date(b.inboundDate).getTime());
 
     let remaining = quantity;
@@ -331,10 +378,53 @@ export const useGrainStore = create<StoreState>((set, get) => ({
   },
 
   advanceOutboundTask: (taskId, newStatus) => {
-    set((state) => ({
-      outboundTasks: state.outboundTasks.map((t) =>
-        t.id === taskId ? { ...t, status: newStatus } : t
-      ),
-    }));
+    const state = get();
+    const task = state.outboundTasks.find((t) => t.id === taskId);
+    if (!task) return;
+
+    if (newStatus === 'completed' && task.status !== 'completed') {
+      const batchUpdates = new Map<string, number>();
+      task.items.forEach((item) => {
+        const current = batchUpdates.get(item.batchId) || 0;
+        batchUpdates.set(item.batchId, current + item.quantity);
+      });
+
+      const warehouseUpdates = new Map<string, number>();
+      task.items.forEach((item) => {
+        const current = warehouseUpdates.get(item.warehouseId) || 0;
+        warehouseUpdates.set(item.warehouseId, current + item.quantity);
+      });
+
+      set((state) => ({
+        outboundTasks: state.outboundTasks.map((t) =>
+          t.id === taskId ? { ...t, status: newStatus } : t
+        ),
+        grainBatches: state.grainBatches.map((b) => {
+          const deduct = batchUpdates.get(b.id) || 0;
+          if (deduct > 0) {
+            const newWeight = Math.max(0, b.weight - deduct);
+            return {
+              ...b,
+              weight: newWeight,
+              status: newWeight <= 0 ? 'outbound' as const : b.status,
+            };
+          }
+          return b;
+        }),
+        warehouses: state.warehouses.map((w) => {
+          const deduct = warehouseUpdates.get(w.id) || 0;
+          if (deduct > 0) {
+            return { ...w, usedCapacity: Math.max(0, w.usedCapacity - deduct) };
+          }
+          return w;
+        }),
+      }));
+    } else {
+      set((state) => ({
+        outboundTasks: state.outboundTasks.map((t) =>
+          t.id === taskId ? { ...t, status: newStatus } : t
+        ),
+      }));
+    }
   },
 }));

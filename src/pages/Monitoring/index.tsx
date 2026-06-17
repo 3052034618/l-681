@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Thermometer, Bug, Droplets, AlertTriangle, Wind, FlaskConical, Check, Clock, User, MessageSquare, X } from 'lucide-react';
 import Header from '@/components/layout/Header';
 import { useGrainStore } from '@/store/grainStore';
-import { getTempColor, getAlertLevelColor, getAlertLevelLabel, formatDateTime, formatRelativeTime } from '@/utils/helpers';
+import { getTempColor, getAlertLevelColor, getAlertLevelLabel, formatDateTime, formatRelativeTime, formatRelativeFuture } from '@/utils/helpers';
 import { FumigationPlan } from '@/types';
 
 const sensorIcons = { temperature: Thermometer, pest: Bug, humidity: Droplets };
@@ -10,11 +10,12 @@ const sensorLabels = { temperature: '粮温', pest: '虫害', humidity: '湿度'
 const sensorUnits = { temperature: '℃', pest: '头/kg', humidity: '%' };
 
 export default function Monitoring() {
-  const { warehouses, alerts, fumigationPlans, resolveAlert, startVentilation, createFumigationFromAlert, approveFumigation } = useGrainStore();
+  const { warehouses, alerts, fumigationPlans, resolveAlert, startVentilation, createFumigationFromAlert, approveFumigation, startFumigationExecution, completeFumigation } = useGrainStore();
   const [selectedWarehouse, setSelectedWarehouse] = useState<string>('all');
   const [selectedAlertType, setSelectedAlertType] = useState<string>('all');
   const [showFumigationModal, setShowFumigationModal] = useState<FumigationPlan | null>(null);
   const [approvalComment, setApprovalComment] = useState('');
+  const [executingPlanId, setExecutingPlanId] = useState<string | null>(null);
 
   const filteredAlerts = alerts.filter(a => {
     if (selectedWarehouse !== 'all' && a.warehouseId !== selectedWarehouse) return false;
@@ -205,8 +206,21 @@ export default function Monitoring() {
                       <div><span className="text-gray-500 text-xs">时长</span><p className="font-medium mt-0.5 font-mono">{plan.duration} h</p></div>
                       <div><span className="text-gray-500 text-xs">批次</span><p className="font-medium mt-0.5 font-mono">{plan.batchId}</p></div>
                     </div>
+                    {(plan.startTime || plan.estimatedEndTime) && (
+                      <div className="grid grid-cols-2 gap-3 text-xs mb-4 p-3 bg-bg-light/40 rounded-lg">
+                        {plan.startTime && (
+                          <div><span className="text-gray-500">开始时间</span><p className="font-medium mt-0.5">{formatDateTime(plan.startTime)}</p></div>
+                        )}
+                        {plan.estimatedEndTime && (
+                          <div><span className="text-gray-500">预计结束</span><p className="font-medium mt-0.5">{formatDateTime(plan.estimatedEndTime)}</p></div>
+                        )}
+                        {plan.endTime && (
+                          <div><span className="text-gray-500">完成时间</span><p className="font-medium mt-0.5 text-temp-normal">{formatDateTime(plan.endTime)}</p></div>
+                        )}
+                      </div>
+                    )}
                     <p className="text-sm text-gray-400 mb-4">原因: {plan.reason}</p>
-                    <div className="flex items-center">
+                    <div className="flex items-center mb-4">
                       {steps.map((st, idx) => {
                         const appr = plan.approvals[st.key as keyof typeof plan.approvals];
                         const prevKey = idx === 0 ? null : steps[idx - 1].key;
@@ -248,6 +262,42 @@ export default function Monitoring() {
                         );
                       })}
                     </div>
+                    {plan.status === 'approved' && (
+                      <div className="flex justify-end">
+                        <button className="btn-wheat text-sm" onClick={() => {
+                          setExecutingPlanId(plan.id);
+                          startFumigationExecution(plan.id);
+                          setTimeout(() => setExecutingPlanId(null), 1000);
+                        }}>
+                          <FlaskConical className="w-4 h-4" />
+                          {executingPlanId === plan.id ? '启动中...' : '启动熏蒸执行'}
+                        </button>
+                      </div>
+                    )}
+                    {plan.status === 'executing' && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs text-wheat flex items-center gap-1">
+                          <Clock className="w-3 h-3 animate-pulse" />
+                          熏蒸执行中 {plan.estimatedEndTime ? `· 预计 ${formatRelativeFuture(plan.estimatedEndTime)} 结束` : ''}
+                        </span>
+                        <button className="btn-outline text-sm" onClick={() => {
+                          setExecutingPlanId(plan.id);
+                          completeFumigation(plan.id);
+                          setTimeout(() => setExecutingPlanId(null), 1000);
+                        }}>
+                          <Check className="w-4 h-4" />
+                          {executingPlanId === plan.id ? '处理中...' : '完成熏蒸'}
+                        </button>
+                      </div>
+                    )}
+                    {plan.status === 'completed' && (
+                      <div className="flex justify-end">
+                        <span className="text-xs text-temp-normal flex items-center gap-1">
+                          <Check className="w-3 h-3" />
+                          熏蒸已完成，相关虫害报警已解除
+                        </span>
+                      </div>
+                    )}
                   </div>
                 );
               })}

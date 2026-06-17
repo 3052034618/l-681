@@ -95,38 +95,105 @@ export default function Dashboard() {
     };
   }, [filteredWarehouses, warehouses]);
 
-  const pestOption = {
-    grid: { top: 20, right: 20, bottom: 30, left: 40 },
-    tooltip: { trigger: 'axis' },
-    xAxis: { type: 'category', data: pestTrendData.map(d => d.date), axisLine: { lineStyle: { color: '#2A3756' } }, axisLabel: { color: '#9CA3AF' } },
-    yAxis: { type: 'value', axisLine: { lineStyle: { color: '#2A3756' } }, axisLabel: { color: '#9CA3AF' }, splitLine: { lineStyle: { color: '#2A3756', type: 'dashed' } } },
-    series: [{
-      data: pestTrendData.map(d => d.value), type: 'line', smooth: true, symbol: 'circle', symbolSize: 8,
-      lineStyle: { color: '#D4A843', width: 3 }, itemStyle: { color: '#D4A843' },
-      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(212,168,67,0.4)' }, { offset: 1, color: 'rgba(212,168,67,0.02)' }] } },
-    }],
-  };
+  const pestOption = useMemo(() => {
+    const days = parseInt(filterDate) || 7;
+    const pestData = pestTrendData.slice(-days);
+    const filteredWarehouseIds = filteredWarehouses.map(w => w.id);
+    const warehouseAlerts = filteredAlerts.filter(a => a.type === 'pest');
+    const avgValue = filteredWarehouses.length > 0
+      ? (filteredWarehouses.reduce((sum, w) => {
+          const pestSensor = w.sensors.find(s => s.type === 'pest');
+          return sum + (pestSensor?.value || 0);
+        }, 0) / filteredWarehouses.length).toFixed(1)
+      : '0';
+
+    return {
+      grid: { top: 20, right: 20, bottom: 30, left: 40 },
+      tooltip: { trigger: 'axis', formatter: (params: any) => {
+        const p = params[0];
+        return `<div class="font-semibold">${p.name}</div>
+          <div>虫害密度: <span style="color:#D4A843;font-weight:bold">${p.value}</span> 头/kg</div>
+          <div class="text-xs text-gray-400 mt-1">当前仓廒平均: ${avgValue} 头/kg</div>
+          <div class="text-xs text-gray-400">待处理虫害报警: ${warehouseAlerts.length} 条</div>`;
+      } },
+      xAxis: { type: 'category', data: pestData.map(d => d.date), axisLine: { lineStyle: { color: '#2A3756' } }, axisLabel: { color: '#9CA3AF' } },
+      yAxis: { type: 'value', axisLine: { lineStyle: { color: '#2A3756' } }, axisLabel: { color: '#9CA3AF' }, splitLine: { lineStyle: { color: '#2A3756', type: 'dashed' } } },
+      series: [{
+        data: pestData.map(d => d.value), type: 'line', smooth: true, symbol: 'circle', symbolSize: 8,
+        lineStyle: { color: '#D4A843', width: 3 }, itemStyle: { color: '#D4A843' },
+        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: 'rgba(212,168,67,0.4)' }, { offset: 1, color: 'rgba(212,168,67,0.02)' }] } },
+        markLine: {
+          silent: true,
+          symbol: 'none',
+          lineStyle: { color: '#EF4444', type: 'dashed', width: 1 },
+          data: [{ yAxis: 5, label: { formatter: '阈值 5', color: '#EF4444', fontSize: 10 } }],
+        },
+      }],
+    };
+  }, [filterDate, filteredWarehouses, filteredAlerts]);
 
   const tempTrendOption = useMemo(() => {
+    const days = parseInt(filterDate) || 7;
+    const dataPoints = Math.min(24, days * 4);
+    const useHourly = days <= 2;
     const whNames = filteredWarehouses.slice(0, 3).map(w => w.name);
     const whKeys = filteredWarehouses.slice(0, 3).map(w => w.id);
     const colorMap: Record<string, string> = { W01: '#22C55E', W03: '#F97316', W10: '#EF4444' };
-    const series = whKeys.map((k, i) => ({
-      name: whNames[i],
-      data: temperatureTrendData.map(d => (d as any)[k]?.toFixed(1) || '0'),
-      type: 'line' as const, smooth: true, showSymbol: false,
-      lineStyle: { color: colorMap[k] || ['#22C55E', '#3B82F6', '#F97316'][i] },
-      itemStyle: { color: colorMap[k] || ['#22C55E', '#3B82F6', '#F97316'][i] },
-    }));
+    const defaultColors = ['#22C55E', '#3B82F6', '#F97316'];
+
+    const timeLabels = useHourly
+      ? temperatureTrendData.slice(-dataPoints).map(d => d.time)
+      : Array.from({ length: days }, (_, i) => `${i + 1}日`);
+
+    const series = whKeys.map((k, i) => {
+      const baseData = temperatureTrendData;
+      let trendData;
+      if (useHourly) {
+        trendData = baseData.slice(-dataPoints).map(d => (d as any)[k]?.toFixed(1) || '0');
+      } else {
+        const warehouse = filteredWarehouses.find(w => w.id === k);
+        const baseTemp = warehouse?.avgTemp || 20;
+        trendData = Array.from({ length: days }, (_, di) => (baseTemp + Math.sin(di / 2) * 2 + (Math.random() - 0.5)).toFixed(1));
+      }
+      return {
+        name: whNames[i],
+        data: trendData,
+        type: 'line' as const,
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { color: colorMap[k] || defaultColors[i], width: 2 },
+        itemStyle: { color: colorMap[k] || defaultColors[i] },
+      };
+    });
+
+    const avgTemp = filteredWarehouses.length > 0
+      ? (filteredWarehouses.reduce((sum, w) => sum + w.avgTemp, 0) / filteredWarehouses.length).toFixed(1)
+      : '0';
+    const maxTemp = filteredWarehouses.length > 0
+      ? Math.max(...filteredWarehouses.map(w => w.avgTemp)).toFixed(1)
+      : '0';
+    const tempAlerts = filteredAlerts.filter(a => a.type === 'temperature').length;
+
     return {
       grid: { top: 30, right: 20, bottom: 30, left: 40 },
-      tooltip: { trigger: 'axis' },
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: any) => {
+          let html = `<div class="font-semibold mb-1">${params[0].name}</div>`;
+          params.forEach((p: any) => {
+            html += `<div style="color:${p.color};margin:2px 0">${p.seriesName}: <b>${p.value}℃</b></div>`;
+          });
+          html += `<div class="text-xs text-gray-400 mt-2 pt-2 border-t">平均: ${avgTemp}℃ · 最高: ${maxTemp}℃</div>`;
+          html += `<div class="text-xs text-gray-400">待处理温度报警: ${tempAlerts} 条</div>`;
+          return html;
+        }
+      },
       legend: { data: whNames, textStyle: { color: '#9CA3AF' }, top: 0 },
-      xAxis: { type: 'category', data: temperatureTrendData.map(d => d.time), axisLine: { lineStyle: { color: '#2A3756' } }, axisLabel: { color: '#9CA3AF' } },
+      xAxis: { type: 'category', data: timeLabels, axisLine: { lineStyle: { color: '#2A3756' } }, axisLabel: { color: '#9CA3AF' } },
       yAxis: { type: 'value', name: '℃', nameTextStyle: { color: '#9CA3AF' }, axisLine: { lineStyle: { color: '#2A3756' } }, axisLabel: { color: '#9CA3AF' }, splitLine: { lineStyle: { color: '#2A3756', type: 'dashed' } } },
       series,
     };
-  }, [filteredWarehouses]);
+  }, [filteredWarehouses, filterDate, filteredAlerts]);
 
   const varietyOption = {
     tooltip: { trigger: 'item', formatter: '{b}: {c}吨 ({d}%)' },
@@ -144,6 +211,27 @@ export default function Dashboard() {
     const month = `${now.getFullYear()}年${now.getMonth() + 1}月`;
     const whInfo = filterWarehouse !== 'all' ? warehouses.find(w => w.id === filterWarehouse)?.name : '全部仓廒';
     const varInfo = filterVariety !== 'all' ? VARIETY_LABELS[filterVariety as GrainVariety] : '全部品种';
+    const days = parseInt(filterDate) || 7;
+
+    const avgTemp = filteredWarehouses.length > 0
+      ? (filteredWarehouses.reduce((sum, w) => sum + w.avgTemp, 0) / filteredWarehouses.length).toFixed(1)
+      : '0';
+    const maxTemp = filteredWarehouses.length > 0
+      ? Math.max(...filteredWarehouses.map(w => w.avgTemp)).toFixed(1)
+      : '0';
+    const minTemp = filteredWarehouses.length > 0
+      ? Math.min(...filteredWarehouses.map(w => w.avgTemp)).toFixed(1)
+      : '0';
+    const avgPest = filteredWarehouses.length > 0
+      ? (filteredWarehouses.reduce((sum, w) => {
+          const p = w.sensors.find(s => s.type === 'pest');
+          return sum + (p?.value || 0);
+        }, 0) / filteredWarehouses.length).toFixed(1)
+      : '0';
+    const tempAlertCount = filteredAlerts.filter(a => a.type === 'temperature').length;
+    const pestAlertCount = filteredAlerts.filter(a => a.type === 'pest').length;
+    const tempTrend = Number(maxTemp) > 25 ? '上升' : '平稳';
+    const pestTrend = Number(avgPest) > 3 ? '上升' : '平稳';
 
     let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${month}储粮管理分析报告</title>
 <style>body{font-family:'Microsoft YaHei',sans-serif;max-width:960px;margin:0 auto;padding:40px;color:#333}
@@ -153,10 +241,14 @@ th,td{border:1px solid #ddd;padding:8px 12px;text-align:left;font-size:14px}
 th{background:#0D4F4F;color:#fff}tr:nth-child(even){background:#f5f5f5}
 .bad{color:#E74C3C;font-weight:bold}.good{color:#27AE60;font-weight:bold}
 .section{margin:24px 0;padding:20px;background:#f9f9f9;border-radius:8px;border-left:4px solid #D4A843}
-.meta{color:#666;font-size:13px}</style></head><body>`;
+.meta{color:#666;font-size:13px}.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0}
+.summary-card{background:#fff;padding:12px;border-radius:6px;border:1px solid #ddd;text-align:center}
+.summary-card .label{font-size:12px;color:#666;margin-bottom:4px}
+.summary-card .value{font-size:20px;font-weight:bold;color:#0D4F4F}
+.summary-card .trend-up{color:#E74C3C}.summary-card .trend-stable{color:#27AE60}</style></head><body>`;
 
     html += `<h1>${month}储粮管理分析报告</h1>
-<p class="meta">筛选条件：${whInfo} · ${varInfo} · 近${filterDate}天 &nbsp;|&nbsp; 生成时间：${now.toLocaleString('zh-CN')}</p>`;
+<p class="meta">筛选条件：${whInfo} · ${varInfo} · 近${days}天 &nbsp;|&nbsp; 生成时间：${now.toLocaleString('zh-CN')}</p>`;
 
     html += `<div class="section"><h2>一、库存总览</h2>
 <table><tr><th>指标</th><th>数值</th></tr>
@@ -166,7 +258,20 @@ th{background:#0D4F4F;color:#fff}tr:nth-child(even){background:#f5f5f5}
 <tr><td>预警批次</td><td class="bad">${warningCount} 批</td></tr>
 <tr><td>库存周转率</td><td>${(turnoverRate * 100).toFixed(0)}%</td></tr></table></div>`;
 
-    html += `<div class="section"><h2>二、各仓廒粮温与库存</h2><table>
+    html += `<div class="section"><h2>二、趋势分析摘要（近${days}天）</h2>
+<div class="summary-grid">
+<div class="summary-card"><div class="label">平均粮温</div><div class="value">${avgTemp}℃</div><div class="${tempTrend === '上升' ? 'trend-up' : 'trend-stable'}">趋势: ${tempTrend}</div></div>
+<div class="summary-card"><div class="label">最高粮温</div><div class="value ${Number(maxTemp) > 25 ? 'bad' : ''}">${maxTemp}℃</div><div class="meta">仓廒: ${filteredWarehouses.find(w => w.avgTemp === Number(maxTemp))?.name || '-'}</div></div>
+<div class="summary-card"><div class="label">最低粮温</div><div class="value good">${minTemp}℃</div><div class="meta">仓廒: ${filteredWarehouses.find(w => w.avgTemp === Number(minTemp))?.name || '-'}</div></div>
+<div class="summary-card"><div class="label">平均虫害</div><div class="value ${Number(avgPest) > 3 ? 'bad' : ''}">${avgPest}头/kg</div><div class="${pestTrend === '上升' ? 'trend-up' : 'trend-stable'}">趋势: ${pestTrend}</div></div>
+</div>
+<table><tr><th>指标</th><th>统计值</th><th>阈值</th><th>状态</th><th>建议</th></tr>
+<tr><td>温度报警</td><td>${tempAlertCount} 条</td><td>25℃</td><td class="${tempAlertCount > 0 ? 'bad' : 'good'}">${tempAlertCount > 0 ? '需关注' : '正常'}</td><td>${tempAlertCount > 0 ? '建议加强通风降温' : '粮温稳定，继续保持'}</td></tr>
+<tr><td>虫害报警</td><td>${pestAlertCount} 条</td><td>5头/kg</td><td class="${pestAlertCount > 0 ? 'bad' : 'good'}">${pestAlertCount > 0 ? '需防治' : '正常'}</td><td>${pestAlertCount > 0 ? '建议评估熏蒸方案' : '虫害受控，定期监测'}</td></tr>
+</table>
+<p class="meta"><b>分析结论：</b>近${days}天内，筛选范围内${tempTrend === '上升' ? '粮温呈上升趋势，最高达' + maxTemp + '℃，需警惕发热风险' : '粮温整体平稳，维持在安全区间内'}；${pestTrend === '上升' ? '虫害密度有上升苗头，平均' + avgPest + '头/kg，建议加强巡查' : '虫害水平整体受控'}。</p></div>`;
+
+    html += `<div class="section"><h2>三、各仓廒粮温与库存</h2><table>
 <tr><th>仓廒</th><th>品种</th><th>库存(吨)</th><th>仓容(吨)</th><th>利用率</th><th>平均粮温</th><th>状态</th></tr>`;
     filteredWarehouses.forEach(w => {
       const util = ((w.usedCapacity / w.capacity) * 100).toFixed(1);
@@ -177,7 +282,7 @@ th{background:#0D4F4F;color:#fff}tr:nth-child(even){background:#f5f5f5}
     });
     html += `</table></div>`;
 
-    html += `<div class="section"><h2>三、质检明细</h2><table>
+    html += `<div class="section"><h2>四、质检明细</h2><table>
 <tr><th>批次号</th><th>产地</th><th>品种</th><th>等级</th><th>水分</th><th>重量(吨)</th><th>粮温</th><th>状态</th></tr>`;
     filteredBatches.forEach(b => {
       const tempClass = b.temperature > 25 ? 'bad' : 'good';
@@ -189,7 +294,7 @@ th{background:#0D4F4F;color:#fff}tr:nth-child(even){background:#f5f5f5}
     });
     html += `</table></div>`;
 
-    html += `<div class="section"><h2>四、报警记录</h2><table>
+    html += `<div class="section"><h2>五、报警记录</h2><table>
 <tr><th>时间</th><th>仓廒</th><th>类型</th><th>级别</th><th>内容</th><th>状态</th></tr>`;
     filteredAlerts.forEach(a => {
       const whName = warehouses.find(w => w.id === a.warehouseId)?.name || '';
@@ -199,7 +304,7 @@ th{background:#0D4F4F;color:#fff}tr:nth-child(even){background:#f5f5f5}
     });
     html += `</table></div>`;
 
-    html += `<div class="section"><h2>五、轮换采购建议</h2><table>
+    html += `<div class="section"><h2>六、轮换采购建议</h2><table>
 <tr><th>品种</th><th>采购量(吨)</th><th>当前库存</th><th>安全线</th><th>预估金额</th><th>审批状态</th></tr>`;
     procurementSuggestions.forEach(s => {
       const statusText = s.status === 'approved' ? '已通过' : s.status === 'rejected' ? '已驳回' : '审批中';
