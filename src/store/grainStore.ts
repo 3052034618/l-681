@@ -34,6 +34,10 @@ interface StoreState {
   checkSingleBatchQuality: (taskId: string, batchId: string, result: QualityCheckResult) => { allPassed: boolean; batchFailed: boolean };
   advanceOutboundTask: (taskId: string, newStatus: OutboundTask['status']) => void;
   updateQuarantineRecord: (recordId: string, status: QuarantineRecord['processStatus'], note?: string) => void;
+  requestReinspection: (recordId: string, note?: string) => void;
+  submitReinspection: (recordId: string, result: QualityCheckResult, operator?: string, note?: string) => { passed: boolean };
+  releaseQuarantineBatch: (recordId: string, toNewOutbound?: boolean) => string | null;
+  finalizeOutbound: (taskId: string) => { completed: number; quarantined: number };
 }
 
 export const useGrainStore = create<StoreState>((set, get) => ({
@@ -438,6 +442,8 @@ export const useGrainStore = create<StoreState>((set, get) => ({
       processStatus: 'pending',
       processNote: reason,
       eTagId: batch.eTagId,
+      reInspectionCount: 0,
+      reInspections: [],
     } : undefined;
 
     set((state) => ({
@@ -483,6 +489,8 @@ export const useGrainStore = create<StoreState>((set, get) => ({
       processStatus: 'pending',
       processNote: `出库${task.code}质检${failedItems.join('、')}不合格，自动隔离`,
       eTagId: batch.eTagId,
+      reInspectionCount: 0,
+      reInspections: [],
     } : undefined;
 
     set((state) => ({
@@ -493,13 +501,14 @@ export const useGrainStore = create<StoreState>((set, get) => ({
             ? { ...i, qualityStatus: batchFailed ? 'failed' as const : 'passed' as const, qualityResult: result }
             : i
         );
-        const anyFailed = newItems.some((i) => i.qualityStatus === 'failed');
+        const failedList = newItems.filter((i) => i.qualityStatus === 'failed');
+        const anyFailed = failedList.length > 0;
         return {
           ...t,
           items: newItems,
-          status: anyFailed ? 'exception' as const : t.status,
+          status: anyFailed ? 'verifying' as const : t.status,
           exceptionReason: anyFailed
-            ? newItems.filter((i) => i.qualityStatus === 'failed').map((i) => `${i.batchId}: ${i.qualityResult?.failedItem || '质检不合格'}`).join('; ')
+            ? failedList.map((i) => `${i.batchId}: ${i.qualityResult?.failedItem || '质检不合格'}`).join('; ')
             : t.exceptionReason,
         };
       }),
@@ -512,11 +521,72 @@ export const useGrainStore = create<StoreState>((set, get) => ({
     const updatedTask = get().outboundTasks.find((t) => t.id === taskId)!;
     const allChecked = updatedTask.items.every((i) => i.qualityStatus && i.qualityStatus !== 'unchecked');
     const allPassed = allChecked && updatedTask.items.every((i) => i.qualityStatus === 'passed');
+    const anyFailed = updatedTask.items.some((i) => i.qualityStatus === 'failed');
 
     if (allPassed) {
       get().advanceOutboundTask(taskId, 'completed');
+    } else if (allChecked && anyFailed) {
+      set((state) => ({
+        outboundTasks: state.outboundTasks.map((t) =>
+          t.id === taskId ? { ...t, status: 'exception' as const } : t
+        ),
+      }));
     }
     return { allPassed, batchFailed };
+  },
+
+  finalizeOutbound: (taskId) => {
+    const state = get();
+    const task = state.outboundTasks.find((t) => t.id === taskId);
+    if (!task) return { completed: 0, quarantined: 0 };
+
+    const passedItems = task.items.filter((i) => i.qualityStatus === 'passed');
+    const failedItems = task.items.filter((i) => i.qualityStatus === 'failed');
+
+    const batchUpdates = new Map<string, number>();
+    passedItems.forEach((item) => {
+      const current = batchUpdates.get(item.batchId) || 0;
+      batchUpdates.set(item.batchId, current + item.quantity);
+    });
+
+    const warehouseUpdates = new Map<string, number>();
+    passedItems.forEach((item) => {
+      const current = warehouseUpdates.get(item.warehouseId) || 0;
+      warehouseUpdates.set(item.warehouseId, current + item.quantity);
+    });
+
+    const completedQty = passedItems.reduce((s, i) => s + i.quantity, 0);
+    const quarantinedQty = failedItems.reduce((s, i) => s + i.quantity, 0);
+
+    set((state) => ({
+      outboundTasks: state.outboundTasks.map((t) =>
+        t.id === taskId ? {
+          ...t,
+          status: failedItems.length > 0 ? 'exception' as const : 'completed' as const,
+        } : t
+      ),
+      grainBatches: state.grainBatches.map((b) => {
+        const deduct = batchUpdates.get(b.id) || 0;
+        if (deduct > 0) {
+          const newWeight = Math.max(0, b.weight - deduct);
+          return {
+            ...b,
+            weight: newWeight,
+            status: newWeight <= 0 ? 'outbound' as const : b.status,
+          };
+        }
+        return b;
+      }),
+      warehouses: state.warehouses.map((w) => {
+        const deduct = warehouseUpdates.get(w.id) || 0;
+        if (deduct > 0) {
+          return { ...w, usedCapacity: Math.max(0, w.usedCapacity - deduct) };
+        }
+        return w;
+      }),
+    }));
+
+    return { completed: completedQty, quarantined: quarantinedQty };
   },
 
   advanceOutboundTask: (taskId, newStatus) => {
@@ -525,46 +595,7 @@ export const useGrainStore = create<StoreState>((set, get) => ({
     if (!task) return;
 
     if (newStatus === 'completed' && task.status !== 'completed') {
-      const batchUpdates = new Map<string, number>();
-      task.items.forEach((item) => {
-        if (item.qualityStatus === 'passed' || !item.qualityStatus || item.qualityStatus === 'unchecked') {
-          const current = batchUpdates.get(item.batchId) || 0;
-          batchUpdates.set(item.batchId, current + item.quantity);
-        }
-      });
-
-      const warehouseUpdates = new Map<string, number>();
-      task.items.forEach((item) => {
-        if (item.qualityStatus === 'passed' || !item.qualityStatus || item.qualityStatus === 'unchecked') {
-          const current = warehouseUpdates.get(item.warehouseId) || 0;
-          warehouseUpdates.set(item.warehouseId, current + item.quantity);
-        }
-      });
-
-      set((state) => ({
-        outboundTasks: state.outboundTasks.map((t) =>
-          t.id === taskId ? { ...t, status: newStatus } : t
-        ),
-        grainBatches: state.grainBatches.map((b) => {
-          const deduct = batchUpdates.get(b.id) || 0;
-          if (deduct > 0) {
-            const newWeight = Math.max(0, b.weight - deduct);
-            return {
-              ...b,
-              weight: newWeight,
-              status: newWeight <= 0 ? 'outbound' as const : b.status,
-            };
-          }
-          return b;
-        }),
-        warehouses: state.warehouses.map((w) => {
-          const deduct = warehouseUpdates.get(w.id) || 0;
-          if (deduct > 0) {
-            return { ...w, usedCapacity: Math.max(0, w.usedCapacity - deduct) };
-          }
-          return w;
-        }),
-      }));
+      get().finalizeOutbound(taskId);
     } else {
       set((state) => ({
         outboundTasks: state.outboundTasks.map((t) =>
@@ -580,5 +611,106 @@ export const useGrainStore = create<StoreState>((set, get) => ({
         r.id === recordId ? { ...r, processStatus: status, processNote: note || r.processNote } : r
       ),
     }));
+  },
+
+  requestReinspection: (recordId, note) => {
+    set((state) => ({
+      quarantineRecords: state.quarantineRecords.map((r) =>
+        r.id === recordId
+          ? {
+              ...r,
+              processStatus: 'reinspect' as const,
+              processNote: note || r.processNote,
+            }
+          : r
+      ),
+    }));
+  },
+
+  submitReinspection: (recordId, result, operator = '李质检员', note) => {
+    const state = get();
+    const record = state.quarantineRecords.find((r) => r.id === recordId);
+    if (!record) return { passed: false };
+
+    const passed = result.overallPassed;
+
+    set((state) => ({
+      quarantineRecords: state.quarantineRecords.map((r) => {
+        if (r.id !== recordId) return r;
+        return {
+          ...r,
+          reInspectionCount: r.reInspectionCount + 1,
+          reInspections: [
+            ...r.reInspections,
+            { time: new Date().toISOString(), operator, result, note },
+          ],
+          processStatus: passed ? 'reinspect' as const : (r.reInspectionCount + 1 >= 2 ? 'return' as const : 'reinspect' as const),
+          processNote: passed
+            ? `复检合格（第${r.reInspectionCount + 1}次），待主管确认是否放行`
+            : (note || `复检不合格（第${r.reInspectionCount + 1}次）`),
+        };
+      }),
+    }));
+    return { passed };
+  },
+
+  releaseQuarantineBatch: (recordId, toNewOutbound = false) => {
+    const state = get();
+    const record = state.quarantineRecords.find((r) => r.id === recordId);
+    if (!record) return null;
+
+    let newTaskId: string | null = null;
+    if (toNewOutbound) {
+      const batch = state.grainBatches.find((b) => b.id === record.batchId);
+      if (batch && batch.weight > 0) {
+        const items: OutboundTaskItem[] = [{
+          batchId: batch.id,
+          quantity: batch.weight,
+          grade: batch.grade,
+          variety: batch.variety,
+          origin: batch.origin,
+          warehouseId: batch.warehouseId,
+          position: batch.position || '未指定',
+          qualityStatus: 'passed',
+        }];
+        const newTask: OutboundTask = {
+          id: `OT${Date.now()}`,
+          code: `CK-${new Date().getFullYear()}-${String(state.outboundTasks.length + 1).padStart(3, '0')}`,
+          items,
+          status: 'picking',
+          createdAt: new Date().toISOString(),
+        };
+        set((state) => ({ outboundTasks: [newTask, ...state.outboundTasks] }));
+        newTaskId = newTask.id;
+      }
+    }
+
+    set((state) => ({
+      quarantineRecords: state.quarantineRecords.map((r) =>
+        r.id === recordId
+          ? { ...r, processStatus: 'released' as const, releasedOutboundTaskId: newTaskId || undefined, processNote: `复检合格，${toNewOutbound ? '已转新出库单' : '已解除隔离重新入库'}` }
+          : r
+      ),
+      grainBatches: state.grainBatches.map((b) =>
+        b.id === record.batchId ? { ...b, status: 'normal' as const } : b
+      ),
+      outboundTasks: state.outboundTasks.map((t) => {
+        if (!t.items.some((i) => i.batchId === record.batchId)) return t;
+        const newItems = t.items.map((i) =>
+          i.batchId === record.batchId ? { ...i, qualityStatus: 'passed' as const } : i
+        );
+        const anyFailed = newItems.some((i) => i.qualityStatus === 'failed');
+        return {
+          ...t,
+          items: newItems,
+          status: anyFailed ? t.status : (newItems.every((i) => i.qualityStatus === 'passed') ? 'completed' as const : t.status),
+          exceptionReason: anyFailed
+            ? newItems.filter((i) => i.qualityStatus === 'failed').map((i) => `${i.batchId}: ${i.qualityResult?.failedItem || ''}`).join('; ')
+            : undefined,
+        };
+      }),
+    }));
+
+    return newTaskId;
   },
 }));

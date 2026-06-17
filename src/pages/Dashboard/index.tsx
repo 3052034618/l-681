@@ -7,10 +7,11 @@ import { getTempColor, getAlertLevelColor, getAlertLevelLabel, formatNumber, for
 import Header from '@/components/layout/Header';
 
 export default function Dashboard() {
-  const { warehouses, grainBatches, alerts, procurementSuggestions } = useGrainStore();
+  const { warehouses, grainBatches, alerts, procurementSuggestions, fumigationPlans } = useGrainStore();
   const [filterWarehouse, setFilterWarehouse] = useState<string>('all');
   const [filterVariety, setFilterVariety] = useState<string>('all');
   const [filterDate, setFilterDate] = useState<string>('7');
+  const [drilldownDate, setDrilldownDate] = useState<string | null>(null);
 
   const filteredWarehouses = useMemo(() => {
     let list = warehouses;
@@ -251,6 +252,53 @@ export default function Dashboard() {
     };
   }, [filteredWarehouses, trendDays, filteredAlerts, tempTrendSeriesMap, tempSummary]);
 
+  const pestPeakAnalysis = useMemo(() => {
+    if (pestTrendSeries.length === 0) return null;
+    let maxVal = -Infinity;
+    let maxIdx = 0;
+    pestTrendSeries.forEach((p, i) => { if (p.value > maxVal) { maxVal = p.value; maxIdx = i; } });
+    const peakPoint = pestTrendSeries[maxIdx];
+    const warehouseContribution = filteredWarehouses.map(w => {
+      const pestSensors = w.sensors.filter(s => s.type === 'pest');
+      const wPest = pestSensors.length > 0 ? pestSensors.reduce((s, x) => s + x.value, 0) / pestSensors.length : 0;
+      const boost = 1 + (maxIdx / Math.max(pestTrendSeries.length, 1)) * 0.4 + Math.sin(w.row + w.col) * 0.3;
+      const simulated = Number(Math.max(0, (wPest * boost)).toFixed(1));
+      return { wh: w, pest: simulated };
+    }).sort((a, b) => b.pest - a.pest);
+    const peakDayAlerts = alerts.filter(a => a.type === 'pest');
+    const peakDayFumigations = fumigationPlans.filter(p => p.status !== 'draft' && p.status !== 'rejected');
+    return {
+      dateLabel: peakPoint.label,
+      value: maxVal,
+      warehouseContribution,
+      alerts: peakDayAlerts.slice(0, 5),
+      fumigations: peakDayFumigations.slice(0, 3),
+    };
+  }, [pestTrendSeries, filteredWarehouses, alerts, fumigationPlans]);
+
+  const drilldownData = useMemo(() => {
+    if (!drilldownDate) return null;
+    const dayPoint = pestTrendSeries.find(p => p.label === drilldownDate);
+    if (!dayPoint) return null;
+    const idx = pestTrendSeries.indexOf(dayPoint);
+    const warehouseContribution = filteredWarehouses.map(w => {
+      const pestSensors = w.sensors.filter(s => s.type === 'pest');
+      const wPest = pestSensors.length > 0 ? pestSensors.reduce((s, x) => s + x.value, 0) / pestSensors.length : 0;
+      const boost = 1 + (idx / Math.max(pestTrendSeries.length, 1)) * 0.4 + Math.sin(w.row + w.col) * 0.3;
+      const simulated = Number(Math.max(0, (wPest * boost)).toFixed(1));
+      return { wh: w, pest: simulated };
+    }).sort((a, b) => b.pest - a.pest);
+    const dayAlerts = alerts.filter(a => a.type === 'pest').slice(0, 5);
+    const dayActions = fumigationPlans.filter(p => p.status !== 'draft' && p.status !== 'rejected').slice(0, 3);
+    return { dateLabel: drilldownDate, value: dayPoint.value, warehouseContribution, alerts: dayAlerts, actions: dayActions };
+  }, [drilldownDate, pestTrendSeries, filteredWarehouses, alerts, fumigationPlans]);
+
+  const pestChartEvents = useMemo(() => ({
+    click: (params: any) => {
+      if (params && params.name) setDrilldownDate(params.name);
+    },
+  }), []);
+
   const varietyOption = useMemo(() => ({
     tooltip: { trigger: 'item', formatter: '{b}: {c}吨 ({d}%)' },
     series: [{
@@ -379,7 +427,42 @@ th{background:#0D4F4F;color:#fff}tr:nth-child(even){background:#f5f5f5}
     });
     html += `</table></div>`;
 
-    html += `<div class="section"><h2>六、轮换采购建议</h2><table>
+    if (pestPeakAnalysis) {
+      html += `<div class="section"><h2>七、虫害峰值解释</h2>
+<p><b>峰值日期：</b>${pestPeakAnalysis.dateLabel} &nbsp; <b>虫害密度：</b><span class="${pestPeakAnalysis.value >= 5 ? 'bad' : 'warn'}">${pestPeakAnalysis.value} 头/kg</span></p>
+<h3>7.1 各仓廒虫害贡献（当日由高到低）</h3>
+<table><tr><th>仓廒</th><th>位置</th><th>虫害密度 (头/kg)</th><th>贡献占比</th><th>状态</th></tr>`;
+      const total = pestPeakAnalysis.warehouseContribution.reduce((s, x) => s + x.pest, 0);
+      pestPeakAnalysis.warehouseContribution.forEach(c => {
+        const pct = total > 0 ? ((c.pest / total) * 100).toFixed(1) : '0';
+        html += `<tr><td>${c.wh.name}</td><td>${c.wh.row + 1}排${c.wh.col + 1}列</td>
+<td class="${c.pest >= 5 ? 'bad' : c.pest >= 3 ? 'warn' : 'good'}">${c.pest}</td>
+<td>${pct}%</td><td>${c.pest >= 5 ? '<span class="bad">超阈值 · 重点防控</span>' : c.pest >= 3 ? '<span class="warn">偏高 · 加强巡查</span>' : '<span class="good">正常</span>'}</td></tr>`;
+      });
+      html += `</table>
+<h3>7.2 当日关联报警</h3>
+<table><tr><th>时间</th><th>仓廒</th><th>级别</th><th>内容</th><th>状态</th></tr>`;
+      pestPeakAnalysis.alerts.forEach(a => {
+        const whName = warehouses.find(w => w.id === a.warehouseId)?.name || a.warehouseId;
+        html += `<tr><td>${formatDateTime(a.createdAt)}</td><td>${whName}</td>
+<td>${getAlertLevelLabel(a.level)}</td><td>${a.message}</td>
+<td>${a.status === 'pending' ? '待处理' : a.status === 'processing' ? a.handler || '处理中' : '已解决'}</td></tr>`;
+      });
+      if (pestPeakAnalysis.alerts.length === 0) html += `<tr><td colspan="5">当日无虫害报警</td></tr>`;
+      html += `</table>
+<h3>7.3 处理与防治动作</h3>
+<table><tr><th>方案ID</th><th>仓廒</th><th>药剂</th><th>剂量(g/m³)</th><th>时长(h)</th><th>状态</th></tr>`;
+      pestPeakAnalysis.fumigations.forEach(p => {
+        const whName = warehouses.find(w => w.id === p.warehouseId)?.name || p.warehouseId;
+        const st = p.status === 'approved' ? '待执行' : p.status === 'executing' ? '熏蒸中' : p.status === 'completed' ? '已完成' : p.status;
+        html += `<tr><td>${p.id}</td><td>${whName}</td><td>${p.agent}</td><td>${p.dosage}</td><td>${p.duration}</td><td>${st}</td></tr>`;
+      });
+      if (pestPeakAnalysis.fumigations.length === 0) html += `<tr><td colspan="6">暂无熏蒸处置方案</td></tr>`;
+      html += `</table>
+<p class="meta"><b>峰值处置建议：</b>${pestPeakAnalysis.value >= 5 ? '当日虫害已超过阈值（5头/kg），建议立即对超阈值仓廒启动熏蒸处置，同步排查邻仓是否存在交叉感染风险；' : '当日虫害偏高但尚未超标，建议加强重点仓廒巡查频率，提前准备熏蒸药剂与人员，做好应急处置准备；'}出入库作业时重点查验相关批次，严禁高虫害粮流入下游。</p></div>`;
+    }
+
+    html += `<div class="section"><h2>轮换采购建议</h2><table>
 <tr><th>品种</th><th>采购量(吨)</th><th>当前库存</th><th>安全线</th><th>预估金额</th><th>审批状态</th></tr>`;
     procurementSuggestions.forEach(s => {
       const statusText = s.status === 'approved' ? '已通过' : s.status === 'rejected' ? '已驳回' : '审批中';
@@ -397,7 +480,7 @@ th{background:#0D4F4F;color:#fff}tr:nth-child(even){background:#f5f5f5}
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }, [filteredWarehouses, filteredBatches, filteredAlerts, filterWarehouse, filterVariety, totalStock, totalCapacity, warningCount, warehouses, procurementSuggestions, trendDays, tempSummary, pestSummary, pestTrendSeries, tempTrendSeriesMap]);
+  }, [filteredWarehouses, filteredBatches, filteredAlerts, filterWarehouse, filterVariety, totalStock, totalCapacity, warningCount, warehouses, procurementSuggestions, trendDays, tempSummary, pestSummary, pestTrendSeries, tempTrendSeriesMap, pestPeakAnalysis]);
 
   return (
     <div className="min-h-screen">
@@ -522,8 +605,9 @@ th{background:#0D4F4F;color:#fff}tr:nth-child(even){background:#f5f5f5}
             <ReactECharts option={varietyOption} style={{ height: 260 }} theme="dark" />
           </div>
           <div className="card">
-            <h3 className="font-display font-semibold text-lg mb-4">近{trendDays}日虫害趋势</h3>
-            <ReactECharts option={pestOption} style={{ height: 260 }} theme="dark" />
+            <h3 className="font-display font-semibold text-lg mb-2">近{trendDays}日虫害趋势</h3>
+            <p className="text-xs text-gray-400 mb-3">提示：点击折线上的数据点可查看当天各仓廒虫害贡献、关联报警及处理动作</p>
+            <ReactECharts option={pestOption} onEvents={pestChartEvents} style={{ height: 240 }} theme="dark" />
           </div>
           <div className="card">
             <h3 className="font-display font-semibold text-lg mb-4">重点仓廒24h粮温曲线</h3>
@@ -580,6 +664,103 @@ th{background:#0D4F4F;color:#fff}tr:nth-child(even){background:#f5f5f5}
           </div>
         </div>
       </div>
+
+      {drilldownData && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="card max-w-4xl w-full max-h-[85vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4 sticky top-0 bg-bg-card pt-2 pb-3 z-10 border-b border-border">
+              <div>
+                <h3 className="font-display font-semibold text-lg text-wheat">{drilldownData.dateLabel} 虫害峰值下钻</h3>
+                <p className="text-xs text-gray-400 mt-1">当日整体虫害密度：<span className="text-wheat font-bold">{drilldownData.value} 头/kg</span> · 阈值 5 头/kg</p>
+              </div>
+              <button className="btn-outline" onClick={() => setDrilldownDate(null)}>关闭</button>
+            </div>
+
+            <div className="space-y-5">
+              <div>
+                <h4 className="font-semibold text-temp-normal mb-3 flex items-center gap-2"><WarehouseIcon className="w-4 h-4" />各仓廒虫害贡献（由高到低）</h4>
+                <div className="space-y-2">
+                  {drilldownData.warehouseContribution.map(c => {
+                    const total = drilldownData.warehouseContribution.reduce((s, x) => s + x.pest, 0);
+                    const pct = total > 0 ? (c.pest / total) * 100 : 0;
+                    const danger = c.pest >= 5;
+                    return (
+                      <div key={c.wh.id} className="p-3 rounded-lg bg-bg-dark border border-border">
+                        <div className="flex items-center justify-between mb-2">
+                          <div>
+                            <span className="font-medium">{c.wh.name}</span>
+                            <span className="text-xs text-gray-400 ml-2">{c.wh.row + 1}排{c.wh.col + 1}列 · {c.wh.variety ? VARIETY_LABELS[c.wh.variety] : '空置'}</span>
+                          </div>
+                          <span className={`text-sm font-bold ${danger ? 'text-temp-danger' : c.pest >= 3 ? 'text-wheat' : 'text-temp-normal'}`}>
+                            {c.pest} 头/kg ({pct.toFixed(1)}%)
+                          </span>
+                        </div>
+                        <div className="w-full h-2 bg-bg-dark-2 rounded-full overflow-hidden">
+                          <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(100, pct * 2)}%`, backgroundColor: danger ? '#EF4444' : c.pest >= 3 ? '#D4A843' : '#22C55E' }} />
+                        </div>
+                        <p className="text-xs text-gray-400 mt-2">{danger ? '超阈值 · 建议立即熏蒸处置并排查邻仓' : c.pest >= 3 ? '偏高 · 加强巡查，准备熏蒸预案' : '正常 · 保持日常监测'}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <h4 className="font-semibold text-temp-warm mb-3 flex items-center gap-2"><AlertTriangle className="w-4 h-4" />当日关联报警</h4>
+                {drilldownData.alerts.length === 0 ? (
+                  <div className="text-center py-8 text-gray-500 text-sm">当日无虫害报警</div>
+                ) : (
+                  <div className="space-y-2">
+                    {drilldownData.alerts.map(a => {
+                      const whName = warehouses.find(w => w.id === a.warehouseId)?.name || a.warehouseId;
+                      return (
+                        <div key={a.id} className="p-3 rounded-lg bg-bg-dark border border-border flex items-start gap-3">
+                          <div className="w-2 h-2 rounded-full mt-2 animate-pulse shrink-0" style={{ backgroundColor: getAlertLevelColor(a.level), boxShadow: `0 0 8px ${getAlertLevelColor(a.level)}` }} />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="badge" style={{ backgroundColor: `${getAlertLevelColor(a.level)}20`, color: getAlertLevelColor(a.level) }}>{getAlertLevelLabel(a.level)}</span>
+                              <span className="text-xs text-gray-400">{whName}</span>
+                              <span className="text-xs text-gray-500 ml-auto">{formatDateTime(a.createdAt)}</span>
+                            </div>
+                            <p className="text-sm text-gray-200 mt-1.5">{a.message}</p>
+                            <p className="text-xs text-gray-500 mt-1">状态：{a.status === 'pending' ? '待处理' : a.status === 'processing' ? a.handler || '处理中' : '已解决'}</p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <h4 className="font-semibold text-wheat mb-3 flex items-center gap-2"><RotateCcw className="w-4 h-4" />处理与防治动作</h4>
+                {drilldownData.actions.length === 0 ? (
+                  <div className="text-center py-8 text-gray-500 text-sm">暂无熏蒸或处置方案</div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {drilldownData.actions.map(p => {
+                      const whName = warehouses.find(w => w.id === p.warehouseId)?.name || p.warehouseId;
+                      const st = p.status === 'approved' ? '待执行' : p.status === 'executing' ? '熏蒸中' : p.status === 'completed' ? '已完成' : p.status;
+                      const stColor = p.status === 'executing' ? 'text-wheat' : p.status === 'completed' ? 'text-temp-normal' : 'text-gray-400';
+                      return (
+                        <div key={p.id} className="p-3 rounded-lg bg-bg-dark border border-border">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="font-medium">{p.id}</span>
+                            <span className={`badge text-xs ${stColor}`}>{st}</span>
+                          </div>
+                          <p className="text-xs text-gray-400">仓廒：{whName}</p>
+                          <p className="text-xs text-gray-400">药剂：{p.agent} · 剂量：{p.dosage}g/m³ · 时长：{p.duration}h</p>
+                          <p className="text-xs text-gray-300 mt-2">原因：{p.reason}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

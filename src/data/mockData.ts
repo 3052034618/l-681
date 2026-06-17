@@ -144,6 +144,21 @@ export const mockQuarantineRecords: QuarantineRecord[] = [
     processStatus: 'reinspect',
     processNote: '复检中，拟重新定级后降价出库',
     eTagId: 'ET-011',
+    reInspectionCount: 1,
+    reInspections: [
+      {
+        time: days(1),
+        operator: '李质检员',
+        result: {
+          grade: { passed: true, expected: 'Grade 2', detected: 'Grade 2' },
+          moisture: { passed: true, expected: 14.5, detected: 12.9, threshold: 14.5 },
+          pest: { passed: true, detected: 1, threshold: 5 },
+          impurity: { passed: true, detected: 0.5, threshold: 1.0 },
+          overallPassed: true,
+        },
+        note: '重新抽样后确认等级符合二等标准',
+      },
+    ],
   },
 ];
 

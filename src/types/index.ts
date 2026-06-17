@@ -119,6 +119,13 @@ export interface QualityCheckResult {
   failedItem?: string;
 }
 
+export interface ReInspectionRecord {
+  time: string;
+  operator: string;
+  result: QualityCheckResult;
+  note?: string;
+}
+
 export interface ProcurementSuggestion {
   id: string;
   variety: GrainVariety;
@@ -195,9 +202,12 @@ export interface QuarantineRecord {
   failedItems: string[];
   qualityDetail: QualityCheckResult;
   quarantineTime: string;
-  processStatus: 'pending' | 'reinspect' | 'return' | 'disposed';
+  processStatus: 'pending' | 'reinspect' | 'released' | 'return' | 'disposed';
   processNote?: string;
   eTagId: string;
+  reInspectionCount: number;
+  reInspections: ReInspectionRecord[];
+  releasedOutboundTaskId?: string;
 }
 
 export interface StockCheckResult {
