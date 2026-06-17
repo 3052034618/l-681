@@ -36,13 +36,12 @@ export default function Warehousing() {
     if (!selectedWarehouse) return;
     const selected = recommendations.find(r => r.warehouse.id === selectedWarehouse);
     if (selected) {
-      addGrainBatch({
+      const eTagId = addGrainBatch({
         ...formData,
         warehouseId: selected.warehouse.id,
         inboundDate: new Date().toISOString(),
       });
-      const tagId = `ET-${String(Date.now()).slice(-4)}`;
-      setGeneratedTag({ id: tagId, qr: `GRAIN-${tagId}-${formData.variety}` });
+      setGeneratedTag({ id: eTagId, qr: `GRAIN-${eTagId}-${formData.variety}` });
       setStep(3);
     }
   };

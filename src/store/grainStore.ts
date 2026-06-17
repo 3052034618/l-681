@@ -13,18 +13,21 @@ interface StoreState {
   fumigationPlans: FumigationPlan[];
   currentTime: Date;
 
-  addGrainBatch: (batch: NewGrainBatch) => void;
+  addGrainBatch: (batch: NewGrainBatch) => string;
   updateSensorData: () => void;
   addAlert: (alert: Omit<Alert, 'id' | 'createdAt'>) => void;
   resolveAlert: (alertId: string, handler: string) => void;
+  startVentilation: (alertId: string) => void;
+  createFumigationFromAlert: (alertId: string) => void;
   recommendWarehouse: (variety: GrainVariety, weight: number) => WarehouseRecommendation[];
   createOutboundTask: (variety: GrainVariety, quantity: number) => OutboundTask;
-  approveFumigation: (planId: string, role: 'warehouseMinister' | 'qualityInspector', comment: string) => void;
+  approveFumigation: (planId: string, role: 'warehouseMinister' | 'qualityInspector', comment: string, approved: boolean) => void;
   approveProcurement: (suggestionId: string, role: 'warehouse' | 'finance' | 'generalManager', comment: string, approved: boolean) => void;
   addMaintenanceOrder: (order: Omit<MaintenanceOrder, 'id' | 'createdAt' | 'escalated'>) => void;
   escalateOrder: (orderId: string) => void;
   completeOrder: (orderId: string) => void;
   quarantineBatch: (batchId: string, reason: string) => void;
+  advanceOutboundTask: (taskId: string, newStatus: OutboundTask['status']) => void;
 }
 
 export const useGrainStore = create<StoreState>((set, get) => ({
@@ -39,15 +42,17 @@ export const useGrainStore = create<StoreState>((set, get) => ({
   currentTime: new Date(),
 
   addGrainBatch: (batchData) => {
-    const id = `B${new Date().getFullYear()}${String(get().grainBatches.length + 1).padStart(3, '0')}`;
-    const eTagId = `ET-${String(get().grainBatches.length + 1).padStart(3, '0')}`;
+    const state = get();
+    const seq = state.grainBatches.length + 1;
+    const id = `B${new Date().getFullYear()}${String(seq).padStart(3, '0')}`;
+    const eTagId = `ET-${String(seq).padStart(3, '0')}`;
     const newBatch: GrainBatch = {
       ...batchData,
       id,
       eTagId,
       temperature: batchData.temperature || 18,
-      pestLevel: 0,
-      status: 'normal',
+      pestLevel: batchData.pestLevel || 0,
+      status: batchData.status || 'normal',
     };
     set((state) => ({
       grainBatches: [...state.grainBatches, newBatch],
@@ -57,6 +62,7 @@ export const useGrainStore = create<StoreState>((set, get) => ({
           : w
       ),
     }));
+    return eTagId;
   },
 
   updateSensorData: () => {
@@ -68,16 +74,17 @@ export const useGrainStore = create<StoreState>((set, get) => ({
           ...w,
           avgTemp: Number(newTemp.toFixed(1)),
           sensors: w.sensors.map((s) => {
-            const isTempAlarm = s.type === 'temperature' && s.value > s.threshold;
-            const isPestAlarm = s.type === 'pest' && s.value > s.threshold;
+            const newVal = s.type === 'temperature'
+              ? Number((newTemp + (Math.random() - 0.5) * 2).toFixed(1))
+              : s.type === 'pest'
+              ? Math.max(0, Math.min(15, s.value + (Math.random() > 0.7 ? 1 : Math.random() > 0.5 ? -1 : 0)))
+              : Number((65 + (Math.random() - 0.5) * 5).toFixed(0));
+            const isTempAlarm = s.type === 'temperature' && newVal > s.threshold;
+            const isPestAlarm = s.type === 'pest' && newVal > s.threshold;
             const sensorStatus: 'normal' | 'offline' | 'alarm' = (isTempAlarm || isPestAlarm) ? 'alarm' : 'normal';
             return {
               ...s,
-              value: s.type === 'temperature'
-                ? Number((newTemp + (Math.random() - 0.5) * 2).toFixed(1))
-                : s.type === 'pest'
-                ? Math.max(0, Math.min(15, s.value + (Math.random() > 0.7 ? 1 : Math.random() > 0.5 ? -1 : 0)))
-                : Number((65 + (Math.random() - 0.5) * 5).toFixed(0)),
+              value: newVal,
               status: sensorStatus,
               lastReading: new Date().toISOString(),
             };
@@ -152,6 +159,40 @@ export const useGrainStore = create<StoreState>((set, get) => ({
     }));
   },
 
+  startVentilation: (alertId) => {
+    set((state) => ({
+      alerts: state.alerts.map((a) =>
+        a.id === alertId ? { ...a, status: 'processing', handler: '通风处置中 · 王保管员' } : a
+      ),
+    }));
+  },
+
+  createFumigationFromAlert: (alertId) => {
+    const state = get();
+    const alert = state.alerts.find((a) => a.id === alertId);
+    if (!alert) return;
+    const batch = state.grainBatches.find((b) => b.warehouseId === alert.warehouseId);
+    const newPlan: FumigationPlan = {
+      id: `FP${Date.now()}`,
+      batchId: batch?.id || '',
+      warehouseId: alert.warehouseId,
+      agent: '磷化铝',
+      dosage: 6,
+      duration: 168,
+      reason: alert.message,
+      status: 'pending_approval',
+      approvals: {},
+      createdAt: new Date().toISOString(),
+      createdBy: '王保管员',
+    };
+    set((state) => ({
+      fumigationPlans: [newPlan, ...state.fumigationPlans],
+      alerts: state.alerts.map((a) =>
+        a.id === alertId ? { ...a, status: 'processing', handler: '已提交熏蒸方案 · 王保管员' } : a
+      ),
+    }));
+  },
+
   recommendWarehouse: (variety, weight) => {
     const state = get();
     const recommendations: WarehouseRecommendation[] = state.warehouses
@@ -210,14 +251,17 @@ export const useGrainStore = create<StoreState>((set, get) => ({
     return task;
   },
 
-  approveFumigation: (planId, role, comment) => {
+  approveFumigation: (planId, role, comment, approved) => {
     set((state) => ({
       fumigationPlans: state.fumigationPlans.map((p) => {
         if (p.id !== planId) return p;
         const newApprovals = {
           ...p.approvals,
-          [role]: { approved: true, comment, time: new Date().toISOString() },
+          [role]: { approved, comment, time: new Date().toISOString() },
         };
+        if (!approved) {
+          return { ...p, approvals: newApprovals, status: 'rejected' as const };
+        }
         const allApproved = newApprovals.warehouseMinister?.approved && newApprovals.qualityInspector?.approved;
         return {
           ...p,
@@ -282,6 +326,14 @@ export const useGrainStore = create<StoreState>((set, get) => ({
         t.items.some((i) => i.batchId === batchId)
           ? { ...t, status: 'exception', exceptionReason: reason }
           : t
+      ),
+    }));
+  },
+
+  advanceOutboundTask: (taskId, newStatus) => {
+    set((state) => ({
+      outboundTasks: state.outboundTasks.map((t) =>
+        t.id === taskId ? { ...t, status: newStatus } : t
       ),
     }));
   },

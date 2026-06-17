@@ -6,12 +6,12 @@ import { VARIETY_LABELS, GRADE_LABELS, GrainVariety } from '@/types';
 import { formatDateTime, formatNumber } from '@/utils/helpers';
 
 export default function Outbound() {
-  const { outboundTasks, grainBatches, warehouses, createOutboundTask, quarantineBatch } = useGrainStore();
+  const { outboundTasks, grainBatches, warehouses, createOutboundTask, quarantineBatch, advanceOutboundTask } = useGrainStore();
   const [showCreate, setShowCreate] = useState(false);
   const [variety, setVariety] = useState<GrainVariety>('wheat');
   const [quantity, setQuantity] = useState(500);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
-  const [scanResult, setScanResult] = useState<{ match: boolean; message: string } | null>(null);
+  const [scanResult, setScanResult] = useState<{ match: boolean; message: string; detail?: string } | null>(null);
 
   const handleCreateTask = () => {
     createOutboundTask(variety, quantity);
@@ -23,11 +23,24 @@ export default function Outbound() {
     if (!task) return;
     const firstItem = task.items[0];
     const batch = grainBatches.find(b => b.id === firstItem.batchId);
-    if (batch && batch.grade === firstItem.grade) {
-      setScanResult({ match: true, message: `核验通过: ${VARIETY_LABELS[batch.variety]} ${GRADE_LABELS[batch.grade]},与入库记录一致` });
+    if (!batch) return;
+
+    const simulateMismatch = Math.random() < 0.3;
+    if (simulateMismatch) {
+      const detectedGrade = firstItem.grade === 'grade1' ? 'grade2' : 'grade1';
+      setScanResult({
+        match: false,
+        message: `核验失败: 入库登记${GRADE_LABELS[firstItem.grade]}，实际检测为${GRADE_LABELS[detectedGrade]}，等级不匹配`,
+        detail: `批次 ${batch.id} · 产地 ${batch.origin} · 标签 ${batch.eTagId}`,
+      });
+      quarantineBatch(batch.id, `出库扫码等级不匹配: 登记为${GRADE_LABELS[firstItem.grade]}，检测为${GRADE_LABELS[detectedGrade]}`);
     } else {
-      setScanResult({ match: false, message: `核验失败: 等级不匹配，入库登记为${GRADE_LABELS[firstItem.grade]}，实际检测不符` });
-      if (batch) quarantineBatch(batch.id, '出库扫码核验等级不匹配');
+      advanceOutboundTask(taskId, 'completed');
+      setScanResult({
+        match: true,
+        message: `核验通过: ${VARIETY_LABELS[batch.variety]} ${GRADE_LABELS[batch.grade]}，与入库记录一致`,
+        detail: `批次 ${batch.id} · 标签 ${batch.eTagId} · 仓廒 ${warehouses.find(w => w.id === batch.warehouseId)?.name}`,
+      });
     }
     setSelectedTask(taskId);
   };
@@ -130,6 +143,8 @@ export default function Outbound() {
                       {scanResult.match ? '核验通过' : '核验不通过'}
                     </p>
                     <p className="text-sm text-gray-300 mt-1">{scanResult.message}</p>
+                    {scanResult.detail && <p className="text-xs text-gray-500 mt-1">追溯: {scanResult.detail}</p>}
+                    {!scanResult.match && <p className="text-xs text-temp-warm mt-2">相关批次已自动隔离，已生成追溯工单至产地</p>}
                   </div>
                 </div>
               )}

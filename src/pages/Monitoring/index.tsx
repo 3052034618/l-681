@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Thermometer, Bug, Droplets, AlertTriangle, Wind, FlaskConical, Check, Clock, User, MessageSquare } from 'lucide-react';
+import { Thermometer, Bug, Droplets, AlertTriangle, Wind, FlaskConical, Check, Clock, User, MessageSquare, X } from 'lucide-react';
 import Header from '@/components/layout/Header';
 import { useGrainStore } from '@/store/grainStore';
 import { getTempColor, getAlertLevelColor, getAlertLevelLabel, formatDateTime, formatRelativeTime } from '@/utils/helpers';
@@ -10,10 +10,11 @@ const sensorLabels = { temperature: '粮温', pest: '虫害', humidity: '湿度'
 const sensorUnits = { temperature: '℃', pest: '头/kg', humidity: '%' };
 
 export default function Monitoring() {
-  const { warehouses, alerts, fumigationPlans, resolveAlert, approveFumigation } = useGrainStore();
+  const { warehouses, alerts, fumigationPlans, resolveAlert, startVentilation, createFumigationFromAlert, approveFumigation } = useGrainStore();
   const [selectedWarehouse, setSelectedWarehouse] = useState<string>('all');
   const [selectedAlertType, setSelectedAlertType] = useState<string>('all');
   const [showFumigationModal, setShowFumigationModal] = useState<FumigationPlan | null>(null);
+  const [approvalComment, setApprovalComment] = useState('');
 
   const filteredAlerts = alerts.filter(a => {
     if (selectedWarehouse !== 'all' && a.warehouseId !== selectedWarehouse) return false;
@@ -138,13 +139,13 @@ export default function Monitoring() {
                         {alert.status !== 'resolved' && (
                           <div className="flex gap-2">
                             {alert.type === 'temperature' && alert.status === 'pending' && (
-                              <button className="btn-outline text-xs py-1.5 px-3">
+                              <button className="btn-outline text-xs py-1.5 px-3" onClick={() => startVentilation(alert.id)}>
                                 <Wind className="w-3.5 h-3.5" />
                                 启动通风
                               </button>
                             )}
                             {alert.type === 'pest' && alert.status === 'pending' && (
-                              <button className="btn-outline text-xs py-1.5 px-3">
+                              <button className="btn-outline text-xs py-1.5 px-3" onClick={() => createFumigationFromAlert(alert.id)}>
                                 <FlaskConical className="w-3.5 h-3.5" />
                                 提交熏蒸
                               </button>
@@ -208,24 +209,41 @@ export default function Monitoring() {
                     <div className="flex items-center">
                       {steps.map((st, idx) => {
                         const appr = plan.approvals[st.key as keyof typeof plan.approvals];
-                        const status = appr?.approved ? 'done' : plan.status === 'pending_approval' ? 'current' : 'pending';
+                        const prevKey = idx === 0 ? null : steps[idx - 1].key;
+                        const prevApproved = prevKey ? plan.approvals[prevKey as keyof typeof plan.approvals]?.approved : true;
+                        let stepStatus: 'done' | 'reject' | 'current' | 'pending';
+                        if (appr?.approved === true) {
+                          stepStatus = 'done';
+                        } else if (appr?.approved === false) {
+                          stepStatus = 'reject';
+                        } else if (prevApproved && plan.status !== 'rejected') {
+                          stepStatus = 'current';
+                        } else {
+                          stepStatus = 'pending';
+                        }
                         return (
                           <div key={st.key} className="flex items-center flex-1 last:flex-none">
                             <div className="flex flex-col items-center">
                               <button
                                 className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold transition-all ${
-                                  status === 'done' ? 'bg-temp-normal text-white' :
-                                  status === 'current' ? 'bg-wheat text-bg-dark hover:bg-wheat-600' :
+                                  stepStatus === 'done' ? 'bg-temp-normal text-white' :
+                                  stepStatus === 'reject' ? 'bg-temp-danger text-white' :
+                                  stepStatus === 'current' ? 'bg-wheat text-bg-dark hover:bg-wheat-600' :
                                   'bg-bg-light text-gray-500 border border-border'
                                 }`}
-                                onClick={() => status === 'current' && setShowFumigationModal(plan)}
+                                onClick={() => stepStatus === 'current' && setShowFumigationModal(plan)}
                               >
-                                {status === 'done' ? <Check className="w-5 h-5" /> : idx + 1}
+                                {stepStatus === 'done' ? <Check className="w-5 h-5" /> : stepStatus === 'reject' ? <X className="w-5 h-5" /> : idx + 1}
                               </button>
-                              <span className={`text-xs mt-1.5 ${status === 'current' ? 'text-wheat' : 'text-gray-500'}`}>{st.label}</span>
-                              {appr?.comment && <span className="text-xs text-gray-500 mt-1 italic">"{appr.comment}"</span>}
+                              <span className={`text-xs mt-1.5 ${
+                                stepStatus === 'current' ? 'text-wheat' :
+                                stepStatus === 'done' ? 'text-temp-normal' :
+                                stepStatus === 'reject' ? 'text-temp-danger' :
+                                'text-gray-500'
+                              }`}>{st.label}</span>
+                              {appr?.comment && <span className="text-xs text-gray-500 mt-1 italic max-w-[80px] truncate">"{appr.comment}"</span>}
                             </div>
-                            {idx < steps.length - 1 && <div className={`flex-1 h-0.5 mx-3 ${status === 'done' ? 'bg-temp-normal' : 'bg-border'}`} />}
+                            {idx < steps.length - 1 && <div className={`flex-1 h-0.5 mx-3 ${stepStatus === 'done' ? 'bg-temp-normal' : stepStatus === 'reject' ? 'bg-temp-danger' : 'bg-border'}`} />}
                           </div>
                         );
                       })}
@@ -239,7 +257,7 @@ export default function Monitoring() {
       </div>
 
       {showFumigationModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowFumigationModal(null)}>
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => { setShowFumigationModal(null); setApprovalComment(''); }}>
           <div className="bg-bg-card rounded-2xl p-6 w-[480px] border border-border" onClick={e => e.stopPropagation()}>
             <h3 className="font-display font-semibold text-xl mb-5">审批熏蒸方案</h3>
             <div className="space-y-4">
@@ -250,20 +268,22 @@ export default function Monitoring() {
               </div>
               <div>
                 <label className="label"><MessageSquare className="w-4 h-4 inline mr-1.5" />审批意见</label>
-                <textarea className="input min-h-[80px] resize-none" placeholder="请输入审批意见..." />
+                <textarea className="input min-h-[80px] resize-none" placeholder="请输入审批意见..." value={approvalComment} onChange={e => setApprovalComment(e.target.value)} />
               </div>
             </div>
             <div className="flex items-center justify-end gap-3 mt-6 pt-5 border-t border-border">
-              <button className="btn-outline" onClick={() => setShowFumigationModal(null)}>取消</button>
+              <button className="btn-outline" onClick={() => { setShowFumigationModal(null); setApprovalComment(''); }}>取消</button>
               <button className="btn-danger" onClick={() => {
                 const currentRole = showFumigationModal.approvals.warehouseMinister ? 'qualityInspector' : 'warehouseMinister';
-                approveFumigation(showFumigationModal.id, currentRole, '驳回，需重新评估');
+                approveFumigation(showFumigationModal.id, currentRole, approvalComment || '驳回，需重新评估', false);
                 setShowFumigationModal(null);
+                setApprovalComment('');
               }}>驳回</button>
               <button className="btn-wheat" onClick={() => {
                 const currentRole = showFumigationModal.approvals.warehouseMinister ? 'qualityInspector' : 'warehouseMinister';
-                approveFumigation(showFumigationModal.id, currentRole, '同意执行');
+                approveFumigation(showFumigationModal.id, currentRole, approvalComment || '同意执行', true);
                 setShowFumigationModal(null);
+                setApprovalComment('');
               }}>批准</button>
             </div>
           </div>
